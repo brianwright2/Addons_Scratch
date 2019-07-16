@@ -1,5 +1,4 @@
 from addons_daily.utils.helpers import *
-
 # from addons_daily.addons_report import expand_addons
 import pyspark.sql.functions as F
 import pandas as pd
@@ -43,6 +42,11 @@ def source_map(df, extra_filter=""):
 
 
 def bucket_field(field, ref):
+    """
+    :param field: A string
+    :param ref: List of possible buckets
+    :return: field if field is one of the possible buckets, or else "Other"
+    """
     if field in ref:
         return field
     return "Other"
@@ -50,11 +54,19 @@ def bucket_field(field, ref):
 
 @F.udf(StringType())
 def bucket_os(os):
+    """
+    :param os: A string
+    :return: os if os is one of the TOP_OS, or else "Other"
+    """
     return bucket_field(os, TOP_OS)
 
 
 @F.udf(StringType())
 def bucket_country(country):
+    """
+    :param country: A string
+    :return: country if country is one of the TOP_COUNTRIES, or else "Other"
+    """
     return bucket_field(country, TOP_COUNTRIES)
 
 
@@ -92,13 +104,18 @@ def get_user_demo_metrics(addons_expanded):
         .groupBy("addon_id", "os")
         .agg(F.countDistinct("client_id").alias("os_client_count"))
         .join(client_counts, on="addon_id", how="left")
-        .withColumn("os_pct", F.col("os_client_count") / F.col("total_clients"))
+        .withColumn("os_pct",
+                    F.col("os_client_count") / F.col("total_clients"))
         .groupby("addon_id")
         .pivot("os")
         .agg(F.first("os_pct").alias("os_pct"))
     )
 
-    os_dist = os_dist.na.fill(0).select("addon_id", source_map(os_dist, "os_pct"))
+    os_dist = (
+        os_dist
+        .na.fill(0)
+        .select("addon_id", source_map(os_dist, "os_pct"))
+    )
 
     ct_dist = (
         addons_expanded.withColumn("country", bucket_country("country"))
@@ -106,14 +123,19 @@ def get_user_demo_metrics(addons_expanded):
         .agg(F.countDistinct("client_id").alias("country_client_count"))
         .join(client_counts, on="addon_id", how="left")
         .withColumn(
-            "country_pct", F.col("country_client_count") / F.col("total_clients")
+            "country_pct",
+            F.col("country_client_count") / F.col("total_clients")
         )
         .groupBy("addon_id")
         .pivot("country")
         .agg(F.first("country_pct").alias("country_pct"))
     )
 
-    ct_dist = ct_dist.na.fill(0).select("addon_id", source_map(ct_dist, "country_pct"))
+    ct_dist = (
+        ct_dist
+        .na.fill(0)
+        .select("addon_id", source_map(ct_dist, "country_pct"))
+    )
 
     combined_dist = os_dist.join(ct_dist, on="addon_id", how="outer")
     return combined_dist
@@ -129,7 +151,7 @@ def get_engagement_metrics(addons_expanded, main_summary):
     :param addons_expanded: addons_expanded
     :param main_summary: main_summary
     :return: dataframe aggregated by addon_id
-        with engagement metrics including 
+        with engagement metrics including
         - average total hours spent per user
         - average total active ticks per user
         - number of clients with the addon disabled
@@ -163,10 +185,10 @@ def get_engagement_metrics(addons_expanded, main_summary):
     return engagement_metrics
 
 
-####################################################################################
-# Browser Metrics - avg tabs, avg bookmarks, avg devtools opened count, avg URI, and
-#   percent with tracking protection enabled
-####################################################################################
+#######################################################################
+# Browser Metrics - avg tabs, avg bookmarks, avg devtools opened count,
+#   avg URI, and percent with tracking protection enabled
+#######################################################################
 
 
 def get_browser_metrics(addons_expanded):
@@ -185,13 +207,15 @@ def get_browser_metrics(addons_expanded):
             "avg_tabs"
         ),
         F.avg("places_bookmarks_count").alias("avg_bookmarks"),
-        F.avg("devtools_toolbox_opened_count").alias("avg_toolbox_opened_count"),
+        F.avg("devtools_toolbox_opened_count")
+        .alias("avg_toolbox_opened_count"),
     )
 
     avg_uri = (
         addons_expanded.groupBy("addon_id", "client_id")
         .agg(
-            F.mean("scalar_parent_browser_engagement_total_uri_count").alias("avg_uri")
+            F.mean("scalar_parent_browser_engagement_total_uri_count")
+            .alias("avg_uri")
         )
         .groupBy("addon_id")
         .agg(F.mean("avg_uri").alias("avg_uri"))
@@ -209,18 +233,27 @@ def get_browser_metrics(addons_expanded):
         .groupBy("addon_id")
         .agg(F.sum("1"), F.count("0"))
         .withColumn("total", F.col("sum(1)") + F.col("count(0)"))
-        .withColumn("pct_w_tracking_prot_enabled", F.col("sum(1)") / F.col("total"))
+        .withColumn("pct_w_tracking_prot_enabled",
+                    F.col("sum(1)") / F.col("total"))
         .drop("sum(1)", "count(0)", "total")
     )
 
-    browser_metrics = browser_metrics.join(avg_uri, on="addon_id", how="outer").join(
-        tracking_enabled, on="addon_id", how="outer"
+    browser_metrics = (
+        browser_metrics
+        .join(avg_uri, on="addon_id", how="outer")
+        .join(tracking_enabled, on="addon_id", how="outer")
     )
 
     return browser_metrics
 
 
 def get_top_10_coinstalls(addons_expanded_day):
+    """
+    :param addons_expanded_day: addons_expanded from the last day
+    :return: dataframe aggregated by addon_id
+        with a list of the top 10 addon ids installed by
+        clients with addon_id installed
+    """
     def str_map_to_dict(m):
         result = {}
         for i in m:
@@ -245,7 +278,7 @@ def get_top_10_coinstalls(addons_expanded_day):
         .groupby("client_id", "addon_id", "coaddon")
         .count()
         .withColumn("rn", (F.row_number().over(w) - F.lit(1)))  # start at 0
-        .filter("rn BETWEEN 1 and 10")  # ignore 0th addon (where coaddon==addon_id)
+        .filter("rn BETWEEN 1 and 10")  # ignore addon where coaddon==addon_id
         .groupby("addon_id")
         .agg(
             F.collect_list(F.concat(F.col("rn"), F.lit("="), "coaddon")).alias(
@@ -303,7 +336,11 @@ def get_trend_metrics(addons_expanded, date):
         (F.countDistinct("client_id") * F.lit(100)).alias("dau")
     )
 
-    dau_pct = dau.withColumn("dau_prop", F.col("dau") / absolute_dau).drop(F.col("dau"))
+    dau_pct = (
+        dau
+        .withColumn("dau_prop", F.col("dau") / absolute_dau)
+        .drop(F.col("dau"))
+    )
 
     trend_metrics = (
         mau.join(wau, on="addon_id", how="outer")
@@ -315,6 +352,11 @@ def get_trend_metrics(addons_expanded, date):
 
 
 def get_top_addon_names(addons_expanded):
+    """
+    :param addons_expanded: the addons_expanded df
+    :return: A data frame with addon id and name in descending order by
+    number of clients
+    """
     w = Window().partitionBy("addon_id").orderBy(F.col("n").desc())
     cnts = addons_expanded.groupby("addon_id", "name").agg(
         F.countDistinct("client_id").alias("n")
@@ -328,6 +370,13 @@ def get_top_addon_names(addons_expanded):
 
 
 def install_flow_events(events):
+    """
+    :param events: The events dataframe
+    :return: Dataframe aggregated by addon_id with
+        - number of installs
+        - average download time
+        - number of uninstalls
+    """
     def source_map(df, alias, extra_filter=""):
         m = F.create_map(
             list(
@@ -359,15 +408,19 @@ def install_flow_events(events):
         .filter("event_object = 'extension'")
         .filter(
             """
-        (event_method = 'install' and event_map_values.step = 'download_completed') or 
+        (event_method = 'install'
+        and event_map_values.step = 'download_completed')
+        or
         (event_method = 'uninstall')
         """
         )
         .withColumn(
             "addon_id",
-            F.when(F.col("addon_id").isNull(), F.col("event_string_value")).otherwise(
-                F.col("addon_id")
-            ),
+            F.when(
+                F.col("addon_id").isNull(),
+                F.col("event_string_value")
+            )
+            .otherwise(F.col("addon_id")),
         )  # uninstalls populate addon_id in a different place
         .drop("event_string_value")
         .groupby("addon_id", "event_method", "source")
@@ -381,7 +434,10 @@ def install_flow_events(events):
         install_flow_events.filter("event_method = 'install'")
         .groupBy("addon_id")
         .pivot("source")
-        .agg((F.sum("n_distinct_users") * F.lit(100)), F.avg("avg_download_time"))
+        .agg(
+            (F.sum("n_distinct_users") * F.lit(100)),
+            F.avg("avg_download_time")
+        )
     )
     uninstalls = (
         install_flow_events.filter("event_method = 'uninstall'")
@@ -408,13 +464,15 @@ def install_flow_events(events):
 
     return agg
     # number_installs = (
-    #     install_flow_events.where(install_flow_events.event_method == "install")
+    #     install_flow_events
+    #     .where(install_flow_events.event_method == "install")
     #     .groupby("addon_id")
     #     .agg(F.sum("n_distinct_users").alias("installs"))
     # )
 
     # number_uninstalls = (
-    #     install_flow_events.where(install_flow_events.event_method == "uninstall")
+    #     install_flow_events
+    #     .where(install_flow_events.event_method == "uninstall")
     #     .groupby("addon_id")
     #     .agg(F.sum("n_distinct_users").alias("uninstalls"))
     # )
@@ -468,6 +526,12 @@ def get_search_metrics(search_daily_df, addons_expanded):
 
 
 def get_is_system(addons_expanded):
+    """
+    :param addons_expanded: addons_expanded
+    :return: dataframe containing addon_id
+        and boolean variable is_system indicating
+        whether the addon is a system addon
+    """
     is_system = (
         addons_expanded.select(["addon_id", "is_system"])
         .groupby("addon_id")

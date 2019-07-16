@@ -35,13 +35,20 @@ CORE_FIELDS = [
 
 
 def expand_addons(main_summary):
-    addons_and_users = main_summary.select(CORE_FIELDS + [F.explode("active_addons")])
+    addons_and_users = main_summary.select(CORE_FIELDS +
+                                           [F.explode("active_addons")])
     addons_expanded = addons_and_users.select(CORE_FIELDS + ["col.*"])
     return addons_expanded
 
 
 def agg_addons_report(
-    spark, date, main_summary, search_clients_daily, events, raw_pings, **kwargs
+    spark,
+    date,
+    main_summary,
+    search_clients_daily,
+    events,
+    raw_pings,
+    **kwargs
 ):
     """
     This function will create the addons dataset
@@ -59,9 +66,11 @@ def agg_addons_report(
     # telemetry metrics
     addon_names = get_top_addon_names(addons_expanded_day)
     user_demo_metrics = get_user_demo_metrics(addons_expanded_day)
-    engagement_metrics = get_engagement_metrics(addons_expanded_day, main_summary_day)
+    engagement_metrics = get_engagement_metrics(addons_expanded_day,
+                                                main_summary_day)
     browser_metrics = get_browser_metrics(addons_expanded_day)
-    search_metrics = get_search_metrics(search_clients_daily, addons_expanded_day)
+    search_metrics = get_search_metrics(search_clients_daily,
+                                        addons_expanded_day)
     top_ten_coinstalls = get_top_10_coinstalls(addons_expanded_day)
     # needs to process 30 days in past, use unfiltered dataframes
     trend_metrics = get_trend_metrics(addons_expanded, date)
